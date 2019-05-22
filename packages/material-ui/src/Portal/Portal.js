@@ -1,50 +1,82 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import PropTypes from 'prop-types';
-import { useForkRef } from '../utils/reactHelpers';
+import ownerDocument from '../utils/ownerDocument';
 import { exactProp } from '@material-ui/utils';
 
-function getContainer(container) {
+function getContainer(container, defaultContainer) {
   container = typeof container === 'function' ? container() : container;
-  // #StrictMode ready
-  return ReactDOM.findDOMNode(container);
+  return ReactDOM.findDOMNode(container) || defaultContainer;
 }
 
-const useEnhancedEffect = typeof window !== 'undefined' ? React.useLayoutEffect : React.useEffect;
+function getOwnerDocument(element) {
+  return ownerDocument(ReactDOM.findDOMNode(element));
+}
 
 /**
  * Portals provide a first-class way to render children into a DOM node
  * that exists outside the DOM hierarchy of the parent component.
  */
-const Portal = React.forwardRef(function Portal(props, ref) {
-  const { children, container, disablePortal, onRendered } = props;
-  const [mountNode, setMountNode] = React.useState(null);
-  const childRef = React.useRef(null);
-  const handleRef = useForkRef(children.ref, childRef);
+class Portal extends React.Component {
+  componentDidMount() {
+    this.setMountNode(this.props.container);
 
-  useEnhancedEffect(() => {
-    if (!disablePortal) {
-      setMountNode(getContainer(container) || document.body);
+    // Only rerender if needed
+    if (!this.props.disablePortal) {
+      this.forceUpdate(this.props.onRendered);
     }
-  }, [container, disablePortal]);
-
-  React.useEffect(() => {
-    if (onRendered && mountNode) {
-      onRendered();
-    }
-  }, [mountNode, onRendered]);
-
-  React.useImperativeHandle(ref, () => mountNode || childRef.current, [mountNode]);
-
-  if (disablePortal) {
-    React.Children.only(children);
-    return React.cloneElement(children, {
-      ref: handleRef,
-    });
   }
 
-  return mountNode ? ReactDOM.createPortal(children, mountNode) : mountNode;
-});
+  componentDidUpdate(prevProps) {
+    if (
+      prevProps.container !== this.props.container ||
+      prevProps.disablePortal !== this.props.disablePortal
+    ) {
+      this.setMountNode(this.props.container);
+
+      // Only rerender if needed
+      if (!this.props.disablePortal) {
+        this.forceUpdate(() => {
+          if (this.props.onRendered) {
+            // This might be triggered earlier than the componentDidUpdate of a parent element.
+            // We need to account for it.
+            clearTimeout(this.renderedTimer);
+            this.renderedTimer = setTimeout(this.props.onRendered);
+          }
+        });
+      }
+    }
+  }
+
+  componentWillUnmount() {
+    this.mountNode = null;
+    clearTimeout(this.renderedTimer);
+  }
+
+  setMountNode(container) {
+    if (this.props.disablePortal) {
+      this.mountNode = ReactDOM.findDOMNode(this).parentElement;
+      return;
+    }
+
+    this.mountNode = getContainer(container, getOwnerDocument(this).body);
+  }
+
+  /**
+   * @public
+   */
+  getMountNode = () => this.mountNode;
+
+  render() {
+    const { children, disablePortal } = this.props;
+
+    if (disablePortal) {
+      return children;
+    }
+
+    return this.mountNode ? ReactDOM.createPortal(children, this.mountNode) : null;
+  }
+}
 
 Portal.propTypes = {
   /**
@@ -74,8 +106,7 @@ Portal.defaultProps = {
 };
 
 if (process.env.NODE_ENV !== 'production') {
-  // eslint-disable-next-line
-  Portal['propTypes' + ''] = exactProp(Portal.propTypes);
+  Portal.propTypes = exactProp(Portal.propTypes);
 }
 
 export default Portal;
